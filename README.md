@@ -105,3 +105,95 @@ GPIO direction, idle state, initialization, invalid channels, power-down,
 wakeup and reference restoration. They do not simulate the analog circuitry
 or prove electrical timing. Verify real ADC readings, reference settling,
 CH7 divider and wakeup on hardware, ideally with a logic analyzer.
+
+## Raspberry Pi Pico PIO backend (Arduino)
+
+On the `pico-pio` branch, `SNAD01PIO` offloads each complete wire transaction
+(command, data direction, acquisition clocks and reads) to an RP2040 PIO state
+machine. Arduino calls remain synchronous/blocking; this is not an asynchronous
+or DMA acquisition API. CPU scheduling can delay transaction submission, but
+the PIO engine generates the clock edges. There is no interrupt masking.
+
+Use the **Raspberry Pi Pico/RP2040/RP2350 by Earle F. Philhower** Arduino board
+package; this implementation is built and tested for the RP2040 Pico with core
+**6.3.0**. The Arduino Mbed core is not supported by this backend. Select
+**Raspberry Pi Pico** in Arduino IDE, install this library, and open
+**SNAD01_PIO**. The generated PIO header is included, so the IDE does not need
+to assemble `.pio` files during a normal sketch build.
+
+```cpp
+#include <SNAD01PIO.h>
+SNAD01PIO adc(8, 9, 10); // RP2040 GPIO numbers: DIO, CLK, START
+
+void setup() {
+  if (!adc.begin(SNAD01PIO::ExternalReference, 0xFF, 0)) {
+    // Invalid GPIO assignment or insufficient free PIO resources.
+    while (true) delay(1000);
+  }
+}
+
+void loop() {
+  uint8_t sample = adc.Convert(0);
+  // Use sample here.
+}
+```
+
+Pins do not need to be adjacent. Use three distinct exposed GPIOs, not pins
+already owned by another peripheral. Pico GPIO is **3.3 V and not 5 V tolerant**;
+check the bust's DIO voltage and use suitable bidirectional level conversion
+if necessary. Connect a common ground. As with the portable driver, the Pico
+must have exclusive control of the ADC interface.
+
+`SNAD01PIO` provides the same initialization, conversion, digital read and
+sleep/wakeup method names as `SNAD01`; `begin()` and `init()` additionally return
+success/failure. No PIO operation runs before successful initialization, and
+reads before initialization return zero. Initialization validates GPIO numbers
+0–29 and rejects duplicates; it cannot detect whether a GPIO is exposed or
+occupied on your particular board. The original `SNAD01` class still works on
+Pico through Arduino GPIO if you prefer the portable implementation.
+
+Each initialized object claims one state machine and **27 instruction slots**
+on PIO0 or PIO1, selecting whichever has capacity. Programs are not shared
+between instances. `end()` (also called by the destructor) releases the state
+machine/program and returns the pins to SIO: START high, CLK low, DIO input.
+Objects cannot be copied. Calls and resource allocation must be serialized
+across cores/interrupts, and the owning object must remain alive while in use.
+Other software must not reconfigure its pins, PIO state machine or instruction
+memory. Do not change the system clock after `begin()`; the divider is set
+from the current clock at initial PIO allocation. Call `end()` then `begin()`
+if the system clock changes.
+
+The PIO instruction clock is 1 MHz, with at least 5 microseconds HIGH and LOW
+per wire clock. Clock frequency varies by write/wait/read phase and stays below
+100 kHz. A transaction sends three FIFO words and waits for one result/ACK.
+DIO is released before acquisition and read clocks. Power-down retains START
+low until explicit or implicit wakeup. The same C-datasheet/A-chip compatibility
+limits described above apply; this backend does not establish new evidence
+about A-revision behavior.
+
+### Reproduce the Pico build
+
+```sh
+arduino-cli core update-index --additional-urls \
+  https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+arduino-cli core install rp2040:rp2040@6.3.0 --additional-urls \
+  https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+arduino-cli compile --fqbn rp2040:rp2040:rpipico --library "$PWD" \
+  --build-path /tmp/snad01-pico-build examples/SNAD01_PIO
+```
+
+To edit the PIO program, regenerate its header with the `pioasm` shipped in
+that board package (tested version 2.3.0), then rerun the build and emulator:
+
+```sh
+pioasm SNAD01.pio SNAD01.pio.h
+npm --prefix tests ci
+npm --prefix tests test
+```
+
+The emulator runs the actual assembled instructions using pinned `rp2040js`
+1.2.0. It checks 2,835 consecutive transactions: every register mask, every ADC
+channel and return byte, every digital byte, sleep/wake, bit order, turnaround,
+clock counts, minimum half-cycle durations and DIO direction. This complements
+the portable GPIO tests; neither substitutes for a logic analyzer and real ADC
+measurements on the Elvis hardware.

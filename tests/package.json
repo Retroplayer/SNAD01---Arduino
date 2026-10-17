@@ -1,0 +1,10 @@
+{
+  "name": "snad01-pio-tests",
+  "private": true,
+  "scripts": {
+    "test": "node pio-protocol.cjs"
+  },
+  "devDependencies": {
+    "rp2040js": "1.2.0"
+  }
+}
