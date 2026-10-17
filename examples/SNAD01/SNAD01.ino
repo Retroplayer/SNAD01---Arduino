@@ -1,98 +1,33 @@
 #include <SNAD01.h>
 
-//Defines for attrib register
-#define Analog 1
-#define Digital 0
+SNAD01 adc(8, 9, 10); // DIO, CLK, START
+const float referenceVolts = 3.27f; // measure the voltage on REF
 
-#define AllAnalog 0xFF
-#define AllDigital 0x00
-
-
-//Defines for WakeUp register
-#define Enable 1
-#define Disable 0
-#define NoWkup 0x00
-#define AllWkup 0xFF
-
-//Defines for Control Register
-//These are all possible, valid combinations, see datasheet
-#define Pullups_Internal 0xa0
-#define Pullups_External 0x90
-#define Pulldowns_Internal 0x60
-#define Pulldowns_External 0x50
-#define Internal 0x20
-#define External 0x10
-
-//Create a new instance of class SNAD01
-//and define the pins used for bit-banging
-//adc = SNAD01(DIO pin, CLK pin, START pin)
-SNAD01 adc = SNAD01(8,9,10);
-uint8_t t=0;
-
-float analog[8];
-uint8_t digital[8];
-
-void setup(){
-
-  uint8_t reg;
-  reg = External; //Set for external reference on REF pin, no pullups or pulldowns enabled
-
-  //Set the registers in the SNAD01
-  //adc.init(reg,attrib,wkup)
-  adc.init(0x10,0xFF,0x00);//external reference, all analog, no wakeup
-
+void setup() {
+  adc.begin(SNAD01::ExternalReference, 0xFF, 0x00);
   Serial.begin(9600);
-
+  Serial.println(F("Send a for analog readings, d for digital readings."));
 }
 
+void loop() {
+  if (!Serial.available()) return;
+  const char command = Serial.read();
+  if (command != 'a' && command != 'd') return;
 
-void loop(){
-  unsigned char c;
-  uint8_t res;
-
-  if(t==8){
-    t=0;
-  }
-
-  if(Serial.available()){
-    c = Serial.read();
-    if (c  == 'a'){
-      for(t=0;t<8;t++){    
-        if(t==7){
-          Serial.write("Chan 7 = ");
-          res = adc.Convert(t);
-          analog[t] = (res*6) * (3.27 / 254.0); //Channel 7 is scaled 1/16th, so we scale it back up
-          Serial.println(analog[t]);
-        }
-        else{
-          res = adc.Convert(t);
-          analog[t] = res * (3.27 / 254.0); //3.27 is my voltage in test configuration. Change to your system voltage
-
-          Serial.write("Chan ");
-          Serial.write(char(t+0x30));
-          Serial.write(" = ");
-          Serial.println(analog[t]);
-        }
-
-      }
+  // Digital reads require digital attributes. Analog-configured bits read zero.
+  adc.begin(SNAD01::ExternalReference, command == 'a' ? 0xFF : 0x00, 0);
+  const uint8_t inputs = command == 'd' ? adc.getDigital() : 0;
+  for (uint8_t channel = 0; channel < 8; ++channel) {
+    Serial.print(F("Channel "));
+    Serial.print(channel);
+    Serial.print(F(" = "));
+    if (command == 'a') {
+      const uint8_t raw = adc.Convert(channel);
+      // SNAD01C CH7 has a 1/6 input divider; verify your chip revision.
+      const float scale = channel == 7 ? 6.0f : 1.0f;
+      Serial.println(raw * (referenceVolts / 256.0f) * scale, 3);
+    } else {
+      Serial.println((inputs >> channel) & 1);
     }
-    else{
-
-    if (c  == 'd')
-    {
-      Serial.println("Getting Digital");
-      res = adc.getDigital();
-
-     for(t=0;t<8;t++){
-        digital[t] = bitRead(res,t);
-        Serial.write("Chan ");
-        Serial.write(char(t+0x30));
-        Serial.write(" = ");
-        Serial.println(digital[t]);
-
-      }
-    }
-  }
   }
 }
-
